@@ -1,4 +1,4 @@
-# Projekt-sportsk-drustvo
+# Projekt-sportsko-drustvo
 Distribuirani sustav za evidenciju članarina i raspored treninga sportskog društva
 
 Projekt prikazuje distribuirani sustav za evidenciju članarina i raspored treninga sportskog društva.
