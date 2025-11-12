@@ -136,6 +136,7 @@ def home():
     return {"message": "Dobrodošli u prostor za evidenciju članarina!"}
 
 # Ruta za dodavanje novog člana
+@app.post("/members")
 def add_member(member: Member):
     if any(m.id == member.id for m in members_db):
         raise HTTPException(status_code=409, detail=f"Član s ID={member.id} već postoji.")
