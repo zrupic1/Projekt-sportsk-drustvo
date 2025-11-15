@@ -2,13 +2,25 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import List, Optional, Dict
 from datetime import date, time
+import os
+from fastapi import Depends
+from .dynamo import (
+    ensure_tables, put_member, get_member as ddb_get_member, list_members as ddb_list_members,
+    delete_member as ddb_delete_member, member_email_exists, put_session as ddb_put_session,
+    get_session as ddb_get_session, list_sessions as ddb_list_sessions,
+    count_enrolled as ddb_count_enrolled, assign_session as ddb_assign_session,
+    unassign_session as ddb_unassign_session, put_membership as ddb_put_membership,
+    get_membership as ddb_get_membership, delete_membership as ddb_delete_membership
+)
 
 
 # Kreiranje glavnog objekta FastAPI
 app = FastAPI(
     title="Evidencija članarina sportskog društva Sparta",
-    version="1.2.0"
+    version="1.4.0"
 )
+ensure_tables()
+
 ALLOWED_GROUPS = {"početni", "srednji", "napredni"}
 ALLOWED_DAYS = {"ponedjeljak", "utorak", "srijeda", "četvrtak", "petak", "subota"}
 ALLOWED_STATUS = {"aktivan", "neaktivan"}
@@ -40,7 +52,7 @@ class TrainingSession(BaseModel):
     def _val_dan(clas, v: str) -> str:
         v = v.lower()
         if v not in ALLOWED_DAYS:
-            raise ValueError(f"grupa mora biti jedna od: {sorted(ALLOWED_DAYS)}")
+            raise ValueError(f"dan mora biti jedan od: {sorted(ALLOWED_DAYS)}")
         return v
     
     @field_validator("max_clanova")
@@ -92,10 +104,13 @@ class MemberUpdate(BaseModel):
     grupa: Optional[str] = None
     status: Optional[str] = None
 
+    @field_validator("grupa")
+    @classmethod
     def _val_member_grupa(cls, v: Optional[str]) -> Optional[str]:
         if v is not None and v not in ALLOWED_GROUPS:
             raise ValueError(f"grupa mora biti jedna od: {sorted(ALLOWED_GROUPS)}")
         return v
+
 
     @field_validator("status")
     @classmethod
@@ -138,141 +153,221 @@ def home():
 # Ruta za dodavanje novog člana
 @app.post("/members")
 def add_member(member: Member):
-    if any(m.id == member.id for m in members_db):
+    if ddb_get_member(member.id):
         raise HTTPException(status_code=409, detail=f"Član s ID={member.id} već postoji.")
-    if any(m.email == member.email for m in members_db):
+    if member_email_exists(member.email):
         raise HTTPException(status_code=409, detail=f"Član s emailom {member.email} već postoji.")
-
-    members_db.append(member)
+    item = {
+        "id": member.id,
+        "ime": member.ime,
+        "prezime": member.prezime,
+        "email": member.email,
+        "mobitel": "".join(ch for ch in member.mobitel if ch.isdigit()),
+        "grupa": member.grupa,
+        "status": member.status,
+    }
+    if member.termin is not None:
+        item["termin"] = member.termin
+    put_member(item)
     return {"message": f"Član {member.ime} {member.prezime} uspješno dodan."}
 
 # Ruta za dohvat svih članova
 @app.get("/members")
 def get_members():
-    return members_db
+    items = ddb_list_members()
+    out: List[Member] = []
+    for r in items:
+        out.append(
+            Member(
+                id=int(r["id"]),
+                ime=r["ime"],
+                prezime=r["prezime"],
+                email=r["email"],
+                mobitel=r["mobitel"],
+                grupa=r["grupa"],
+                status=r["status"],
+                membership=None,            # dohvat po potrebi preko ddb_get_membership
+                termin=int(r["termin"]) if "termin" in r else None
+            )
+        )
+    return out
 
 # Promjena podataka o stanju članarine
-@app.put("/members/{member_id}/membership")
-def update_membership(member_id: int, membership: Membership):
-    for member in members_db:
-        if member.id == member_id:
-            member.membership = membership
-            return {"message": f"Članarina za {member.ime} {member.prezime} ažurirana."}
-    return {"error": "Član nije pronađen."}
+
 
 # Dodavanje člana u termin
 @app.get("/members/{member_id}")
 def get_member(member_id: int) -> Member:
-    member = get_member_by_id(member_id)
-    if not member:
+    r = ddb_get_member(member_id)
+    if not r:
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
-    return member
+    mem = ddb_get_membership(member_id)
+    membership = None
+    if mem:
+        membership = Membership(
+            datum_uplate=date.fromisoformat(mem["datum_uplate"]),
+            datum_isteka=date.fromisoformat(mem["datum_isteka"]),
+            iznos=float(mem["iznos"]),
+            status=mem["status"]
+        )
+    return Member(
+        id=int(r["id"]),
+        ime=r["ime"],
+        prezime=r["prezime"],
+        email=r["email"],
+        mobitel=r["mobitel"],
+        grupa=r["grupa"],
+        status=r["status"],
+        membership=membership,
+        termin=int(r["termin"]) if "termin" in r else None
+    )
+
 
 @app.patch("/members/{member_id}")
 def update_member(member_id: int, patch: MemberUpdate):
-    member = get_member_by_id(member_id)
-    if not member:
+    existing = ddb_get_member(member_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
 
-    # ako mijenjamo email, provjeri da nije zauzet
-    if patch.email and any(m.email == patch.email and m.id != member_id for m in members_db):
-        raise HTTPException(status_code=409, detail=f"Email {patch.email} već koristi drugi član.")
-
-    # primijeni promjene samo na poslana polja
     data = patch.model_dump(exclude_unset=True)
+
+    # provjera emaila: ako mijenjamo na drugi, a već postoji kod nekog drugog → 409
+    if "email" in data and data["email"] != existing["email"] and member_email_exists(data["email"]):
+        raise HTTPException(status_code=409, detail=f"Email {data['email']} već koristi drugi član.")
+
+    # priprema update-a
+    update_expr_parts = []
+    expr_vals = {}
     for k, v in data.items():
-        setattr(member, k, v)
-    return {"message": f"Podaci člana {member.ime} {member.prezime} ažurirani."}
+        if k == "mobitel":
+            v = "".join(ch for ch in v if ch.isdigit())
+        update_expr_parts.append(f"{k} = :{k}")
+        expr_vals[f":{k}"] = v
+
+    if not update_expr_parts:
+        return {"message": "Nema promjena."}
+
+    from .dynamo import update_member as ddb_update_member
+    try:
+        ddb_update_member(member_id, update_expr_parts, expr_vals)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Greška pri ažuriranju.")
+
+    return {"message": "Podaci člana ažurirani."}
+
 
 @app.delete("/members/{member_id}")
 def delete_member(member_id: int):
-    idx = next((i for i, m in enumerate(members_db) if m.id == member_id), None)
-    if idx is None:
+    if not ddb_get_member(member_id):
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
-    removed = members_db.pop(idx)
-    return {"message": f"Član {removed.ime} {removed.prezime} obrisan."}
+    ddb_delete_member(member_id)
+    # ako postoji membership – obriši
+    ddb_delete_membership(member_id)
+    return {"message": "Član obrisan."}
 
 # Članarina (postavljanje/izmjena)
 @app.put("/members/{member_id}/membership")
 def update_membership(member_id: int, membership: Membership):
-    member = get_member_by_id(member_id)
-    if not member:
+    if not ddb_get_member(member_id):
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
-    member.membership = membership
-    return {"message": f"Članarina za {member.ime} {member.prezime} ažurirana."}
+    ddb_put_membership(
+        member_id=member_id,
+        datum_uplate=membership.datum_uplate,
+        datum_isteka=membership.datum_isteka,
+        iznos=membership.iznos,
+        status=membership.status
+    )
+    return {"message": "Članarina ažurirana."}
 
 # Brisanje članarine
 @app.delete("/members/{member_id}/membership")
 def delete_membership(member_id: int):
-    member = get_member_by_id(member_id)
-    if not member:
+    if not ddb_get_member(member_id):
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
-    member.membership = None
-    return {"message": f"Članarina za {member.ime} {member.prezime} obrisana."}
+    ddb_delete_membership(member_id)
+    return {"message": "Članarina obrisana."}
 
 # Termini
 @app.put("/members/{member_id}/assign-session/{session_id}")
 def assign_session(member_id: int, session_id: int):
-    member = get_member_by_id(member_id)
-    if not member:
+    m = ddb_get_member(member_id)
+    if not m:
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
-    session = get_session_by_id(session_id)
-    if not session:
+    s = ddb_get_session(session_id)
+    if not s:
         raise HTTPException(status_code=404, detail="Termin nije pronađen.")
-
-    if member.grupa != session.grupa:
-        raise HTTPException(status_code=400, detail=f"Član je u grupi '{member.grupa}', a termin je za grupu '{session.grupa}'.")
-
-    if count_enrolled(session_id) >= session.max_clanova:
+    if m["grupa"] != s["grupa"]:
+        raise HTTPException(status_code=400, detail=f"Član je u grupi '{m['grupa']}', a termin je za grupu '{s['grupa']}'.")
+    if ddb_count_enrolled(session_id) >= int(s["max_clanova"]):
         raise HTTPException(status_code=409, detail="Termin je popunjen (dosegnut maksimalni broj članova).")
+    ddb_assign_session(member_id, session_id)
+    return {"message": "Član upisan u termin."}
 
-    member.termin = session_id
-    return {"message": f"{member.ime} {member.prezime} upisan u termin {session.grupa} ({session.dan} u {session.vrijeme})."}
-
-# Odjava iz termina
 @app.put("/members/{member_id}/unassign-session")
 def unassign_session(member_id: int):
-    member = get_member_by_id(member_id)
-    if not member:
+    if not ddb_get_member(member_id):
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
-    member.termin = None
-    return {"message": f"{member.ime} {member.prezime} odjavljen iz termina."}
+    ddb_unassign_session(member_id)
+    return {"message": "Član odjavljen iz termina."}
+
+# Odjava iz termina
+
 
 # TERMINI
+
 @app.post("/sessions")
 def add_session(session: TrainingSession):
-    if any(s.id == session.id for s in sessions_db):
+    if ddb_get_session(session.id):
         raise HTTPException(status_code=409, detail=f"Termin s ID={session.id} već postoji.")
-    sessions_db.append(session)
+    ddb_put_session({
+        "id": session.id,
+        "grupa": session.grupa,
+        "dan": session.dan.lower(),
+        "vrijeme": session.vrijeme.strftime("%H:%M:%S"),
+        "max_clanova": session.max_clanova
+    })
     return {"message": f"Termin za grupu {session.grupa} ({session.dan} u {session.vrijeme}) dodan."}
 
-@app.get("/sessions")
-def get_sessions() -> List[TrainingSession]:
-    return sessions_db
 
 # IZVJEŠĆA
 @app.get("/reports/occupancy")
 def report_occupancy() -> List[Dict]:
-    """Popunjenost po terminima (upisani / max / preostalo)."""
     out = []
-    for s in sessions_db:
-        upisani = count_enrolled(s.id)
+    sessions = ddb_list_sessions()
+    for s in sessions:
+        sid = int(s["id"])
+        upisani = ddb_count_enrolled(sid)
         out.append({
-            "session_id": s.id,
-            "grupa": s.grupa,
-            "dan": s.dan,
-            "vrijeme": s.vrijeme.isoformat(),
+            "session_id": sid,
+            "grupa": s["grupa"],
+            "dan": s["dan"],
+            "vrijeme": s["vrijeme"],
             "upisani": upisani,
-            "max": s.max_clanova,
-            "preostalo": max(0, s.max_clanova - upisani),
+            "max": int(s["max_clanova"]),
+            "preostalo": max(0, int(s["max_clanova"]) - upisani),
         })
     return out
 
 @app.get("/reports/active-per-group")
 def report_active_per_group() -> Dict[str, int]:
-    """Broj aktivnih članova po grupama."""
     result = {g: 0 for g in ALLOWED_GROUPS}
-    for m in members_db:
-        if m.status == "aktivan":
-            result[m.grupa] += 1
+    members = ddb_list_members()
+    for m in members:
+        if m.get("status") == "aktivan":
+            result[m["grupa"]] += 1
     return result
+@app.get("/sessions")
+def get_sessions() -> List[TrainingSession]:
+    items = ddb_list_sessions()
+    out: List[TrainingSession] = []
+    for r in items:
+        out.append(
+            TrainingSession(
+                id=int(r["id"]),
+                grupa=r["grupa"],
+                dan=r["dan"],
+                vrijeme=time.fromisoformat(r["vrijeme"]),
+                max_clanova=int(r["max_clanova"]),
+            )
+        )
+    return out
