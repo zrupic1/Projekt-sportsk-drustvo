@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 import os
 from typing import List, Optional, Dict, Any
 from decimal import Decimal
@@ -7,7 +9,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # KONEKCIJA
-DDB_ENDPOINT = os.getenv("DDB_ENDPOINT")  # npr. http://localhost:4566 ili http://localhost:8000
+DDB_ENDPOINT = os.getenv("DDB_ENDPOINT", "http://localhost:8000")  # Default za local
 AWS_REGION = os.getenv("AWS_REGION", "eu-central-1")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "test")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "test")
@@ -37,31 +39,44 @@ def _date_to_str(d: date) -> str:
 
 # REIRANJE TABLICA (idempotentno)
 def ensure_tables() -> None:
+    print("Provjeravam tablice...")
     existing = [t.name for t in _dynamodb.tables.all()]
+    print(f"Postojeće tablice: {existing}")
+    
     # members: PK id (Number)
     if MEMBERS_TBL not in existing:
+        print(f"Kreiram tablicu {MEMBERS_TBL}...")
         _dynamodb.create_table(
             TableName=MEMBERS_TBL,
             KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "N"}],
             BillingMode="PAY_PER_REQUEST",
-        ).wait_until_exists()
+        )
+        print(f"✅ Tablica {MEMBERS_TBL} kreirana!")
+    
     # sessions: PK id (Number)
     if SESSIONS_TBL not in existing:
+        print(f"Kreiram tablicu {SESSIONS_TBL}...")
         _dynamodb.create_table(
             TableName=SESSIONS_TBL,
             KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "N"}],
             BillingMode="PAY_PER_REQUEST",
-        ).wait_until_exists()
+        )
+        print(f"✅ Tablica {SESSIONS_TBL} kreirana!")
+    
     # memberships: PK member_id (Number)
     if MEMBERSHIPS_TBL not in existing:
+        print(f"Kreiram tablicu {MEMBERSHIPS_TBL}...")
         _dynamodb.create_table(
             TableName=MEMBERSHIPS_TBL,
             KeySchema=[{"AttributeName": "member_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "member_id", "AttributeType": "N"}],
             BillingMode="PAY_PER_REQUEST",
-        ).wait_until_exists()
+        )
+        print(f"✅ Tablica {MEMBERSHIPS_TBL} kreirana!")
+    
+    print("✅ Sve tablice provjerene/kreirane!")
 
 # MEMBERS
 def put_member(item: Dict[str, Any]) -> None:
