@@ -1,10 +1,10 @@
 from dotenv import load_dotenv
 load_dotenv()
 import os
+import time
 from typing import List, Optional, Dict, Any
 from decimal import Decimal
-from datetime import date, time
-
+from datetime import date, time as time_type
 import boto3
 from botocore.exceptions import ClientError
 
@@ -39,45 +39,83 @@ def _date_to_str(d: date) -> str:
 
 # REIRANJE TABLICA (idempotentno)
 def ensure_tables() -> None:
-    print("Provjeravam tablice...")
-    existing = [t.name for t in _dynamodb.tables.all()]
-    print(f"Postojeće tablice: {existing}")
+    """
+    Idempotentno kreiranje tablica.
+    Koristi client.list_tables() umjesto resource.tables.all() za robusnost.
+    """
+    print("Provjeravam DynamoDB tablice...")
     
-    # members: PK id (Number)
-    if MEMBERS_TBL not in existing:
-        print(f"Kreiram tablicu {MEMBERS_TBL}...")
-        _dynamodb.create_table(
-            TableName=MEMBERS_TBL,
-            KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "N"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        print(f"✅ Tablica {MEMBERS_TBL} kreirana!")
+    # Koristi client umjesto resource za robusnije listanje
+    client = boto3.client(
+        "dynamodb",
+        region_name=AWS_REGION,
+        endpoint_url=DDB_ENDPOINT,
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    )
     
-    # sessions: PK id (Number)
-    if SESSIONS_TBL not in existing:
-        print(f"Kreiram tablicu {SESSIONS_TBL}...")
-        _dynamodb.create_table(
-            TableName=SESSIONS_TBL,
-            KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "N"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        print(f"✅ Tablica {SESSIONS_TBL} kreirana!")
+    try:
+        response = client.list_tables()
+        existing = response.get("TableNames", [])
+        print(f"Postojeće tablice: {existing}")
+    except Exception as e:
+        print(f"⚠️  Greška pri dohvatu tablica: {e}")
+        existing = []
     
-    # memberships: PK member_id (Number)
-    if MEMBERSHIPS_TBL not in existing:
-        print(f"Kreiram tablicu {MEMBERSHIPS_TBL}...")
-        _dynamodb.create_table(
-            TableName=MEMBERSHIPS_TBL,
-            KeySchema=[{"AttributeName": "member_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "member_id", "AttributeType": "N"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        print(f"✅ Tablica {MEMBERSHIPS_TBL} kreirana!")
+    # Definicije tablica
+    tables_to_create = [
+        {
+            "name": MEMBERS_TBL,
+            "key_schema": [{"AttributeName": "id", "KeyType": "HASH"}],
+            "attribute_definitions": [{"AttributeName": "id", "AttributeType": "N"}],
+        },
+        {
+            "name": SESSIONS_TBL,
+            "key_schema": [{"AttributeName": "id", "KeyType": "HASH"}],
+            "attribute_definitions": [{"AttributeName": "id", "AttributeType": "N"}],
+        },
+        {
+            "name": MEMBERSHIPS_TBL,
+            "key_schema": [{"AttributeName": "member_id", "KeyType": "HASH"}],
+            "attribute_definitions": [{"AttributeName": "member_id", "AttributeType": "N"}],
+        },
+    ]
+    
+    # Kreiraj tablice koje ne postoje
+    for table_def in tables_to_create:
+        table_name = table_def["name"]
+        
+        if table_name not in existing:
+            print(f"Kreiram tablicu: {table_name}...")
+            try:
+                client.create_table(
+                    TableName=table_name,
+                    KeySchema=table_def["key_schema"],
+                    AttributeDefinitions=table_def["attribute_definitions"],
+                    BillingMode="PAY_PER_REQUEST",
+                )
+                print(f"✅ Tablica {table_name} kreirana!")
+                
+                # Pričekaj da tablica bude aktivna (max 10s)
+                for _ in range(10):
+                    try:
+                        table_status = client.describe_table(TableName=table_name)
+                        if table_status["Table"]["TableStatus"] == "ACTIVE":
+                            print(f"✅ Tablica {table_name} je aktivna!")
+                            break
+                    except:
+                        pass
+                    time.sleep(1)
+                    
+            except Exception as e:
+                if "ResourceInUseException" in str(e):
+                    print(f"ℹ️  Tablica {table_name} već postoji.")
+                else:
+                    print(f"❌ Greška pri kreiranju tablice {table_name}: {e}")
+        else:
+            print(f"ℹ️  Tablica {table_name} već postoji.")
     
     print("✅ Sve tablice provjerene/kreirane!")
-
 # MEMBERS
 def put_member(item: Dict[str, Any]) -> None:
     _dynamodb.Table(MEMBERS_TBL).put_item(Item=item)

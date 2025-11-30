@@ -1,12 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel, EmailStr, field_validator
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Annotated
 from datetime import date, time
 import os
-from fastapi import Depends
+from . import dynamo
 from .dynamo import (
-    ensure_tables, put_member, get_member as ddb_get_member, list_members as ddb_list_members,
-    delete_member as ddb_delete_member, member_email_exists, put_session as ddb_put_session,
+    ensure_tables, put_member, get_member as ddb_get_member, 
+    list_members as ddb_list_members, delete_member as ddb_delete_member, 
+    member_email_exists, put_session as ddb_put_session,
     get_session as ddb_get_session, list_sessions as ddb_list_sessions,
     count_enrolled as ddb_count_enrolled, assign_session as ddb_assign_session,
     unassign_session as ddb_unassign_session, put_membership as ddb_put_membership,
@@ -17,13 +18,27 @@ from .dynamo import (
 # Kreiranje glavnog objekta FastAPI
 app = FastAPI(
     title="Evidencija članarina sportskog društva Sparta",
-    version="1.4.0"
+    version="1.4.2"
 )
-ensure_tables()
+API_KEY = os.getenv("API_KEY", "sparta-secret-key-2024")
+
+async def verify_api_key(x_api_key: Annotated[str, Header()] = None):
+    """Provjeri API ključ za mutirajuće operacije"""
+    if x_api_key != API_KEY:
+        raise HTTPException(
+            status_code=403, 
+            detail="Invalid or missing API Key. Provide X-API-Key header."
+        )
+    return x_api_key
 
 ALLOWED_GROUPS = {"početni", "srednji", "napredni"}
 ALLOWED_DAYS = {"ponedjeljak", "utorak", "srijeda", "četvrtak", "petak", "subota"}
 ALLOWED_STATUS = {"aktivan", "neaktivan"}
+
+@app.on_event("startup")
+def _ensure_ddb():
+    ensure_tables() 
+
 
 # Model podataka za članarinu
 class Membership(BaseModel):
@@ -151,7 +166,7 @@ def home():
     return {"message": "Dobrodošli u prostor za evidenciju članarina!"}
 
 # Ruta za dodavanje novog člana
-@app.post("/members")
+@app.post("/members", dependencies=[Depends(verify_api_key)])
 def add_member(member: Member):
     if ddb_get_member(member.id):
         raise HTTPException(status_code=409, detail=f"Član s ID={member.id} već postoji.")
@@ -173,10 +188,17 @@ def add_member(member: Member):
 
 # Ruta za dohvat svih članova
 @app.get("/members")
-def get_members():
+def get_members(grupa: Optional[str] = None, status: Optional[str] = None):
     items = ddb_list_members()
     out: List[Member] = []
     for r in items:
+        # Filtriranje po grupi
+        if grupa and r.get("grupa") != grupa:
+            continue
+        # Filtriranje po statusu
+        if status and r.get("status") != status:
+            continue
+        
         out.append(
             Member(
                 id=int(r["id"]),
@@ -186,7 +208,7 @@ def get_members():
                 mobitel=r["mobitel"],
                 grupa=r["grupa"],
                 status=r["status"],
-                membership=None,            # dohvat po potrebi preko ddb_get_membership
+                membership=None,
                 termin=int(r["termin"]) if "termin" in r else None
             )
         )
@@ -223,7 +245,7 @@ def get_member(member_id: int) -> Member:
     )
 
 
-@app.patch("/members/{member_id}")
+@app.patch("/members/{member_id}", dependencies=[Depends(verify_api_key)])
 def update_member(member_id: int, patch: MemberUpdate):
     existing = ddb_get_member(member_id)
     if not existing:
@@ -256,7 +278,7 @@ def update_member(member_id: int, patch: MemberUpdate):
     return {"message": "Podaci člana ažurirani."}
 
 
-@app.delete("/members/{member_id}")
+@app.delete("/members/{member_id}", dependencies=[Depends(verify_api_key)])
 def delete_member(member_id: int):
     if not ddb_get_member(member_id):
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
@@ -266,7 +288,7 @@ def delete_member(member_id: int):
     return {"message": "Član obrisan."}
 
 # Članarina (postavljanje/izmjena)
-@app.put("/members/{member_id}/membership")
+@app.put("/members/{member_id}/membership", dependencies=[Depends(verify_api_key)])
 def update_membership(member_id: int, membership: Membership):
     if not ddb_get_member(member_id):
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
@@ -280,7 +302,7 @@ def update_membership(member_id: int, membership: Membership):
     return {"message": "Članarina ažurirana."}
 
 # Brisanje članarine
-@app.delete("/members/{member_id}/membership")
+@app.delete("/members/{member_id}/membership", dependencies=[Depends(verify_api_key)])
 def delete_membership(member_id: int):
     if not ddb_get_member(member_id):
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
@@ -288,7 +310,7 @@ def delete_membership(member_id: int):
     return {"message": "Članarina obrisana."}
 
 # Termini
-@app.put("/members/{member_id}/assign-session/{session_id}")
+@app.put("/members/{member_id}/assign-session/{session_id}", dependencies=[Depends(verify_api_key)])
 def assign_session(member_id: int, session_id: int):
     m = ddb_get_member(member_id)
     if not m:
@@ -303,7 +325,7 @@ def assign_session(member_id: int, session_id: int):
     ddb_assign_session(member_id, session_id)
     return {"message": "Član upisan u termin."}
 
-@app.put("/members/{member_id}/unassign-session")
+@app.put("/members/{member_id}/unassign-session", dependencies=[Depends(verify_api_key)])
 def unassign_session(member_id: int):
     if not ddb_get_member(member_id):
         raise HTTPException(status_code=404, detail="Član nije pronađen.")
@@ -315,7 +337,7 @@ def unassign_session(member_id: int):
 
 # TERMINI
 
-@app.post("/sessions")
+@app.post("/sessions", dependencies=[Depends(verify_api_key)])
 def add_session(session: TrainingSession):
     if ddb_get_session(session.id):
         raise HTTPException(status_code=409, detail=f"Termin s ID={session.id} već postoji.")
