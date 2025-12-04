@@ -18,7 +18,7 @@ from .dynamo import (
 # Kreiranje glavnog objekta FastAPI
 app = FastAPI(
     title="Evidencija članarina sportskog društva Sparta",
-    version="1.4.2"
+    version="1.4.3"
 )
 API_KEY = os.getenv("API_KEY", "sparta-secret-key-2024")
 

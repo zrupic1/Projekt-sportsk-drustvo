@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # DynamoDB Local
+  dynamodb:
+    image: amazon/dynamodb-local
+    container_name: sparta-dynamodb
+    ports:
+      - "8000:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath /data"
+    volumes:
+      - dynamodb-data:/data
+    networks:
+      - sparta-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Instance 1
+  api1:
+    build: .
+    container_name: sparta-api-1
+    ports:
+      - "8081:8080"
+    environment:
+      - DDB_ENDPOINT=http://dynamodb:8000
+      - AWS_REGION=eu-central-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+    networks:
+      - sparta-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+  # FastAPI Instance 2
+  api2:
+    build: .
+    container_name: sparta-api-2
+    ports:
+      - "8082:8080"
+    environment:
+      - DDB_ENDPOINT=http://dynamodb:8000
+      - AWS_REGION=eu-central-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+    networks:
+      - sparta-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+  # FastAPI Instance 3
+  api3:
+    build: .
+    container_name: sparta-api-3
+    ports:
+      - "8083:8080"
+    environment:
+      - DDB_ENDPOINT=http://dynamodb:8000
+      - AWS_REGION=eu-central-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+    networks:
+      - sparta-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+  # Nginx Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: sparta-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api1
+      - api2
+      - api3
+    networks:
+      - sparta-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  sparta-network:
+    driver: bridge
+
+volumes:
+  dynamodb-data:
