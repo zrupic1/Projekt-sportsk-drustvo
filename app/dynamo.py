@@ -45,7 +45,7 @@ def ensure_tables() -> None:
     """
     print("Provjeravam DynamoDB tablice...")
     
-    # Koristi client umjesto resource za robusnije listanje
+   
     client = boto3.client(
         "dynamodb",
         region_name=AWS_REGION,
@@ -59,7 +59,7 @@ def ensure_tables() -> None:
         existing = response.get("TableNames", [])
         print(f"Postojeće tablice: {existing}")
     except Exception as e:
-        print(f"⚠️  Greška pri dohvatu tablica: {e}")
+        print(f"Greška pri dohvatu tablica: {e}")
         existing = []
     
     # Definicije tablica
@@ -101,7 +101,7 @@ def ensure_tables() -> None:
                     try:
                         table_status = client.describe_table(TableName=table_name)
                         if table_status["Table"]["TableStatus"] == "ACTIVE":
-                            print(f"✅ Tablica {table_name} je aktivna!")
+                            print(f"Tablica {table_name} je aktivna!")
                             break
                     except:
                         pass
@@ -109,13 +109,13 @@ def ensure_tables() -> None:
                     
             except Exception as e:
                 if "ResourceInUseException" in str(e):
-                    print(f"ℹ️  Tablica {table_name} već postoji.")
+                    print(f"Tablica {table_name} već postoji.")
                 else:
-                    print(f"❌ Greška pri kreiranju tablice {table_name}: {e}")
+                    print(f"Greška pri kreiranju tablice {table_name}: {e}")
         else:
-            print(f"ℹ️  Tablica {table_name} već postoji.")
+            print(f"Tablica {table_name} već postoji.")
     
-    print("✅ Sve tablice provjerene/kreirane!")
+    print("Sve tablice provjerene/kreirane!")
 # MEMBERS
 def put_member(item: Dict[str, Any]) -> None:
     _dynamodb.Table(MEMBERS_TBL).put_item(Item=item)
@@ -175,7 +175,7 @@ def list_sessions() -> List[Dict[str, Any]]:
     resp = _dynamodb.Table(SESSIONS_TBL).scan()
     return resp.get("Items", [])
 
-# ---- MEMBERSHIP (1:1 po članu) ----
+# Članstvo (1:1 po članu)
 def put_membership(member_id: int, datum_uplate: date, datum_isteka: date, iznos: float, status: str) -> None:
     _dynamodb.Table(MEMBERSHIPS_TBL).put_item(
         Item={
@@ -196,7 +196,7 @@ def delete_membership(member_id: int) -> None:
 
 def update_member(member_id: int, set_parts: list[str], values: dict):
     ue = "SET " + ", ".join(set_parts)
-    # Pretvori float u Decimal (DynamoDB ne voli 'float')
+    # Pretvoriti float u decimal
     clean_vals = {k: (Decimal(str(v)) if isinstance(v, float) else v) for k, v in values.items()}
     _dynamodb.Table(MEMBERS_TBL).update_item(
         Key={"id": member_id},

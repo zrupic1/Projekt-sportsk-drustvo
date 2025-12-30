@@ -46,9 +46,9 @@ def add_sessions():
         try:
             response = requests.post(f"{BASE_URL}/sessions", json=session, headers=HEADERS)
             if response.status_code == 200:
-                print(f"  ✓ Termin {session['id']}: {session['grupa']} - {session['dan']} {session['vrijeme']}")
+                print(f"  Termin {session['id']}: {session['grupa']} - {session['dan']} {session['vrijeme']}")
             else:
-                print(f"  ⚠ Termin {session['id']} već postoji ili greška")
+                print(f"  Termin {session['id']} već postoji ili greška")
         except Exception as e:
             print(f" Greška pri dodavanju termina {session['id']}: {e}")
 
@@ -96,9 +96,9 @@ def add_memberships():
         try:
             response = requests.put(f"{BASE_URL}/members/{member_id}/membership", json=membership, headers=HEADERS)
             if response.status_code == 200:
-                print(f"  ✓ Članarina za člana {member_id}")
+                print(f" Članarina za člana {member_id}")
             else:
-                print(f"  ⚠ Greška pri dodavanju članarine za člana {member_id}")
+                print(f" Greška pri dodavanju članarine za člana {member_id}")
         except Exception as e:
             print(f" Greška: {e}")
 
