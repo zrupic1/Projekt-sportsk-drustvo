@@ -10,7 +10,7 @@ Sustav omogućuje:
 - Upis i odjavu članova u termine s provjerom usklađenosti grupe
 - Praćenje članarina (datum uplate, datum isteka, iznos, status)
 - Generiranje izvještaja o popunjenosti termina i broju aktivnih članova po grupama
-- API Key autentifikaciju za zaštitu mutirajućih operacija
+
 
 Grupe članova podijeljene su na tri razine: početni, srednji i napredni. Sustav provjerava je li član može biti upisan u određeni termin na temelju njegove grupe.
 
@@ -45,7 +45,7 @@ docker run -d --name dynamodb-local -p 8000:8000 amazon/dynamodb-local -jar Dyna
 start.bat
 ```
 
-Aplikacija će biti dostupna na http://127.0.0.1:8080
+Aplikacija će biti dostupna na http://127.0.0.1:8000
 
 # Distribuirani sustav
 
@@ -77,7 +77,7 @@ Projekt uključuje skriptu za automatsko popunjavanje baze testnim podacima:
 python seed_data.py
 ```
 
-Skripta dodaje 8 članova raspoređenih u tri grupe, 6 termina treninga, članarine za aktivne članove te upisuje članove u odgovarajuće termine.
+Skripta dodaje primjerne testne podatke.
 
 # API endpointi
 
